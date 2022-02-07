@@ -146,10 +146,7 @@ func cmdToJSON(c Command) string {
 
 func cmdValidateLength(c Command, msg []byte, min int) error {
 	if l := len(msg); l < min {
-		return &MessageError{
-			Message: fmt.Sprintf("Invalid %s Response size : %d/%d", c.Name(), l, min),
-			Detail:  hex.EncodeToString(msg),
-		}
+		return fmt.Errorf("invalid %s response size - %d", c.Name(), l)
 	}
 	return nil
 }

@@ -3,6 +3,7 @@ package ipmigo
 import (
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math"
 )
@@ -48,10 +49,7 @@ type sdrHeader struct {
 
 func (r *sdrHeader) Unmarshal(buf []byte) ([]byte, error) {
 	if l := len(buf); l < sdrHeaderSize {
-		return nil, &MessageError{
-			Message: fmt.Sprintf("Invalid SDRHeader size : %d/%d", l, sdrHeaderSize),
-			Detail:  hex.EncodeToString(buf),
-		}
+		return nil, fmt.Errorf("invalid SDR header size - %d", l)
 	}
 
 	r.RecordID = binary.LittleEndian.Uint16(buf[:2])
@@ -88,7 +86,7 @@ func (r *sdrRaw) Unmarshal(buf []byte) ([]byte, error) {
 
 // Intersection of FullSensor and CompactSensor
 type SDRCommonSensor struct {
-	args   *Arguments
+	config *Config
 	header *sdrHeader
 	data   []byte
 
@@ -146,10 +144,7 @@ func (r *SDRCommonSensor) Data() []byte  { return r.data }
 
 func (r *SDRCommonSensor) Unmarshal(buf []byte) ([]byte, error) {
 	if l := len(buf); l < sdrCommonSensorSize {
-		return nil, &MessageError{
-			Message: fmt.Sprintf("Invalid SDRCommonSensor size : %d/%d", l, sdrCommonSensorSize),
-			Detail:  hex.EncodeToString(buf),
-		}
+		return nil, fmt.Errorf("invalid SDR CommonSensor size - %d", l)
 	}
 	r.data = buf
 	r.OwnerID = buf[0]
@@ -250,10 +245,7 @@ type SDRFullSensor struct {
 
 func (r *SDRFullSensor) Unmarshal(buf []byte) ([]byte, error) {
 	if l := len(buf); l < sdrFullSensorSize {
-		return nil, &MessageError{
-			Message: fmt.Sprintf("Invalid SDRFullSensor size : %d/%d", l, sdrFullSensorSize),
-			Detail:  hex.EncodeToString(buf),
-		}
+		return nil, fmt.Errorf("invalid SDR FullSensor size - %d", l)
 	}
 
 	buf, err := r.SDRCommonSensor.Unmarshal(buf)
@@ -310,7 +302,7 @@ func (r *SDRFullSensor) IsThresholdBaseSensor() bool {
 // Returns `true` if sensor has an analog reading.
 func (r *SDRFullSensor) IsAnalogReading() bool {
 	// There is a discrete sensor that returns an analog reading.
-	if r.args != nil && r.args.Discretereading {
+	if r.config != nil && r.config.Discretereading {
 		return r.SensorUnits.Analog < 0x03 && (r.IsThresholdBaseSensor() ||
 			r.SensorUnits.Percentage || r.SensorUnits.Modifier != 0 ||
 			r.SensorUnits.BaseType != 0 || r.SensorUnits.ModifierType != 0)
@@ -396,10 +388,7 @@ type SDRCompactSensor struct {
 
 func (r *SDRCompactSensor) Unmarshal(buf []byte) ([]byte, error) {
 	if l := len(buf); l < sdrCompactSensorSize {
-		return nil, &MessageError{
-			Message: fmt.Sprintf("Invalid SDRCompactSensor size : %d/%d", l, sdrCompactSensorSize),
-			Detail:  hex.EncodeToString(buf),
-		}
+		return nil, fmt.Errorf("invalid SDR CompactSensor size - %d", l)
 	}
 
 	buf, err := r.SDRCommonSensor.Unmarshal(buf)
@@ -461,10 +450,7 @@ func (r *SDRFRUDeviceLocator) Data() []byte  { return r.data }
 
 func (r *SDRFRUDeviceLocator) Unmarshal(buf []byte) ([]byte, error) {
 	if l := len(buf); l < sdrFRUDeviceLocatorSize {
-		return nil, &MessageError{
-			Message: fmt.Sprintf("Invalid SDRFRUDeviceLocator size : %d/%d", l, sdrFRUDeviceLocatorSize),
-			Detail:  hex.EncodeToString(buf),
-		}
+		return nil, fmt.Errorf("invalid SDR FRUDeviceLocator size - %d", l)
 	}
 	r.data = buf
 	r.SlaveAddress = buf[0] & 0xfe >> 1
@@ -566,13 +552,13 @@ func sdrGetRecord(c *Client, reservation uint16, header *sdrHeader) (SDR, error)
 	// TODO Add a new record type
 	switch t := header.RecordType; t {
 	case SDRTypeFullSensor:
-		r := &SDRFullSensor{SDRCommonSensor: SDRCommonSensor{args: c.args, header: header}}
+		r := &SDRFullSensor{SDRCommonSensor: SDRCommonSensor{config: c.config, header: header}}
 		if _, err := r.Unmarshal(buf); err != nil {
 			return nil, err
 		}
 		return r, nil
 	case SDRTypeCompactSensor:
-		r := &SDRCompactSensor{SDRCommonSensor: SDRCommonSensor{args: c.args, header: header}}
+		r := &SDRCompactSensor{SDRCommonSensor: SDRCommonSensor{config: c.config, header: header}}
 		if _, err := r.Unmarshal(buf); err != nil {
 			return nil, err
 		}
@@ -604,16 +590,11 @@ func SDRGetRecordsRepo(c *Client, filter func(id uint16, t SDRType) bool) ([]SDR
 	}
 
 	if v := gic.SDRVersion; v != 0x01 && v != 0x51 && v != 0x02 {
-		return nil, &MessageError{
-			Message: fmt.Sprintf("Unknown SDR repository version : %d", v),
-		}
+		return nil, fmt.Errorf("unknown SDR repository version - %d", v)
 	}
 	if gic.RecordCount == 0 {
-		return nil, &MessageError{
-			Message: fmt.Sprintf("SDR record is zero in repository"),
-		}
+		return nil, errors.New("SDR repository has no records")
 	}
-
 	sensors := make([]SDR, 0, gic.RecordCount)
 
 retry:
@@ -623,10 +604,11 @@ retry:
 	}
 	reservation := rsc.ReservationID
 
-	var header *sdrHeader
-	var nextID uint16
-	var err error
-
+	var (
+		header *sdrHeader
+		nextID uint16
+		err    error
+	)
 	for recordID := sdrFirstID; recordID != sdrLastID; {
 		if header == nil {
 			header, nextID, err = sdrGetRecordHeaderAndNextID(c, reservation, recordID)
@@ -649,7 +631,6 @@ retry:
 
 			sensors = append(sensors, record)
 		}
-
 		header = nil
 		recordID = nextID
 	}

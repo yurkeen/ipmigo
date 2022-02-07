@@ -3,20 +3,21 @@ package main
 import (
 	"encoding/hex"
 	"fmt"
+	"os"
 	"time"
 
-	"github.com/k-sone/ipmigo"
+	"github.com/yurkeen/ipmigo"
 )
 
 // Print system event logs.
 func main() {
-	c, err := ipmigo.NewClient(ipmigo.Arguments{
+	c, err := ipmigo.NewClient(ipmigo.Config{
 		Version:       ipmigo.V2_0,
-		Address:       "192.168.1.1:623",
-		Username:      "myuser",
-		Password:      "mypass",
+		Address:       os.Getenv("IPMI_HOSTPORT"),
+		Username:      os.Getenv("IPMI_USERNAME"),
+		Password:      os.Getenv("IPMI_PASSWORD"),
 		Timeout:       2 * time.Second,
-		Retries:       1,
+		Retries:       2,
 		CipherSuiteID: 3,
 	})
 	if err != nil {
@@ -58,12 +59,12 @@ func main() {
 			if !s.IsAssertionEvent() {
 				dir = "Deasserted"
 			}
-			fmt.Printf("%-4d | %-25s | %-25s(0x%02x) | %-10s | %s\n",
-				s.RecordID, &s.Timestamp, s.SensorType, s.SensorNumber, dir, s.Description())
+			fmt.Printf("%-4d | %-20s | 0x%02x %-25s | %-10s | %s\n",
+				s.RecordID, &s.Timestamp, s.SensorNumber, s.SensorType, dir, s.Description())
 
 		case *ipmigo.SELTimestampedOEMRecord:
-			fmt.Printf("%-4d | %-25s | 0x%08x | 0x%s\n",
-				s.RecordID, &s.Timestamp, s.ManufacturerID, hex.EncodeToString(s.OEMDefined))
+			fmt.Printf("%-4d | %-20s | OEM Record 0x%02x | 0x%08x | 0x%s\n",
+				s.RecordID, &s.Timestamp, s.RecordType, s.ManufacturerID, hex.EncodeToString(s.OEMDefined))
 
 		case *ipmigo.SELNonTimestampedOEMRecord:
 			fmt.Printf("%-4d | 0x%s\n", s.RecordID, hex.EncodeToString(s.OEM))

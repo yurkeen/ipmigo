@@ -16,38 +16,46 @@ const (
 type PrivilegeLevel uint8
 
 const (
-	PrivilegeCallback PrivilegeLevel = iota + 1
-	PrivilegeUser
-	PrivilegeOperator
-	PrivilegeAdministrator
+	// BMC will pick the Cipher Suite returned in the RMCP+ Open Session Response
+	// by checking the algorithms proposed in the RMCP+ Open Session Request
+	// against the Cipher Suites available for each privilege level, starting
+	// with the “OEM Proprietary level” and progressing to lower privilege levels
+	// until a match is found. The resultant match results in an ‘effective’
+	// maximum privilege level for the session.
+	RoleBMC PrivilegeLevel = iota
+	RoleCallback
+	RoleUser
+	RoleOperator
+	RoleAdministrator
+	RoleOEM
 )
 
 func (p PrivilegeLevel) String() string {
-	switch p {
-	case PrivilegeCallback:
-		return "CALLBACK"
-	case PrivilegeUser:
-		return "USER"
-	case PrivilegeOperator:
-		return "OPERATOR"
-	case PrivilegeAdministrator:
-		return "ADMINISTRATOR"
-	default:
-		return fmt.Sprintf("Unknown(%d)", p)
+	level := [6]string{
+		RoleBMC:           "BMC_DEFINED",
+		RoleCallback:      "CALLBACK",
+		RoleUser:          "USER",
+		RoleOperator:      "OPERATOR",
+		RoleAdministrator: "ADMINISTRATOR",
+		RoleOEM:           "OEM_DEFINED",
 	}
+	if int(p) > len(level)-1 {
+		return "INVALID"
+	}
+	return level[p]
 }
 
-// An argument for creating an IPMI Client
-type Arguments struct {
-	Version        Version        // IPMI version to use
-	Network        string         // See net.Dial parameter (The default is `udp`)
-	Address        string         // See net.Dial parameter
-	Timeout        time.Duration  // Each connect/read-write timeout (The default is 5sec)
-	Retries        uint           // Number of retries (The default is `0`)
-	Username       string         // Remote server username
-	Password       string         // Remote server password
-	PrivilegeLevel PrivilegeLevel // Session privilege level (The default is `Administrator`)
-	CipherSuiteID  uint           // ID of cipher suite, See Table 22-20 (The default is `0` which no auth and no encrypt)
+// Config holds IPMI Client configuraton options.
+type Config struct {
+	Version       Version        // IPMI version to use
+	Network       string         // See net.Dial parameter (The default is `udp`)
+	Address       string         // See net.Dial parameter
+	Timeout       time.Duration  // Each connect/read-write timeout (The default is 5sec)
+	Retries       uint           // Number of retries (The default is `0`)
+	Username      string         // Remote server username
+	Password      string         // Remote server password
+	Role          PrivilegeLevel // Session privilege level (The default is `Administrator`)
+	CipherSuiteID CipherSuiteID  // ID of cipher suite, See Table 22-20 (The default is `0` which no auth and no encrypt)
 
 	// Workaround options
 
@@ -56,64 +64,44 @@ type Arguments struct {
 	Discretereading bool
 }
 
-func (a *Arguments) setDefault() {
-	if a.Version == 0 {
-		a.Version = V2_0
+func (c *Config) setDefault() {
+	if c.Version == 0 {
+		c.Version = V2_0
 	}
-	if a.Network == "" {
-		a.Network = "udp"
+	if c.Network == "" {
+		c.Network = "udp"
 	}
-	if a.Timeout == 0 {
-		a.Timeout = 5 * time.Second
+	if c.Timeout == 0 {
+		c.Timeout = 5 * time.Second
 	}
-	if a.PrivilegeLevel == 0 {
-		a.PrivilegeLevel = PrivilegeAdministrator
+	if c.Role == 0 {
+		c.Role = RoleAdministrator
 	}
 }
 
-func (a *Arguments) validate() error {
-	switch a.Version {
+func (c *Config) validate() error {
+	switch c.Version {
 	case V2_0:
-		if len(a.Password) > passwordMaxLengthV2_0 {
-			return &ArgumentError{
-				Value:   a.Password,
-				Message: "Password is too long",
-			}
+		if l := len(c.Password); l > passwordMaxLengthV2_0 {
+			return fmt.Errorf("password is longer than %d bytes - %d", passwordMaxLengthV2_0, l)
 		}
-		if a.CipherSuiteID < 0 || a.CipherSuiteID > uint(len(cipherSuiteIDs)-1) {
-			return &ArgumentError{
-				Value:   a.CipherSuiteID,
-				Message: "Invalid Cipher Suite ID",
-			}
-		}
-		if a.CipherSuiteID > 3 {
-			return &ArgumentError{
-				Value:   a.CipherSuiteID,
-				Message: "Unsupported Cipher Suite ID in ipmigo",
-			}
+
+		if c.CipherSuiteID.cipherSuite() == unsupportedCipher {
+			return fmt.Errorf("invalid Cipher Suite ID - %d", c.CipherSuiteID)
 		}
 	case V1_5:
 		// TODO Support v1.5 ?
 		fallthrough
 	default:
-		return &ArgumentError{
-			Value:   a.Version,
-			Message: "Unsupported IPMI version",
-		}
+		return fmt.Errorf("unsupported IPMI version (%d)", c.Version)
 	}
 
-	if a.PrivilegeLevel < 0 || a.PrivilegeLevel > PrivilegeAdministrator {
-		return &ArgumentError{
-			Value:   a.PrivilegeLevel,
-			Message: "Invalid Privilege Level",
-		}
+	if c.Role > RoleAdministrator {
+		return fmt.Errorf("unsupported Privilege Level - %d", c.Role)
 	}
 
-	if len(a.Username) > userNameMaxLength {
-		return &ArgumentError{
-			Value:   a.Username,
-			Message: "Username is too long",
-		}
+	if len(c.Username) > userNameMaxLength {
+		return fmt.Errorf("username is longer than %d bytes", userNameMaxLength)
 	}
 
 	return nil
@@ -122,7 +110,7 @@ func (a *Arguments) validate() error {
 // IPMI Client
 type Client struct {
 	session session
-	args    *Arguments
+	config  *Config
 
 	sdrReadingBytes uint8 // for GetSDRCommand(byte to read of each BMC)
 }
@@ -133,18 +121,18 @@ func (c *Client) Close() error              { return c.session.Close() }
 func (c *Client) Execute(cmd Command) error { return c.session.Execute(cmd) }
 
 // Create an IPMI Client
-func NewClient(args Arguments) (*Client, error) {
-	if err := args.validate(); err != nil {
+func NewClient(c Config) (*Client, error) {
+	if err := c.validate(); err != nil {
 		return nil, err
 	}
-	args.setDefault()
+	c.setDefault()
 
 	var s session
-	switch args.Version {
+	switch c.Version {
 	case V1_5:
-		s = newSessionV1_5(&args)
+		s = newSessionV1_5(&c)
 	case V2_0:
-		s = newSessionV2_0(&args)
+		s = newSessionV2_0(&c)
 	}
-	return &Client{session: s, args: &args, sdrReadingBytes: sdrDefaultReadBytes}, nil
+	return &Client{session: s, config: &c, sdrReadingBytes: sdrDefaultReadBytes}, nil
 }

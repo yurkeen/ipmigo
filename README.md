@@ -19,7 +19,7 @@ package main
 import (
     "fmt"
 
-    "github.com/k-sone/ipmigo"
+    "github.com/yurkeen/ipmigo"
 )
 
 func main() {

@@ -1,7 +1,6 @@
 package ipmigo
 
 import (
-	"encoding/hex"
 	"fmt"
 )
 
@@ -39,9 +38,8 @@ func (c rmcpClass) String() string {
 
 	if c.IsAck() {
 		return "ACK " + s
-	} else {
-		return "Normal " + s
 	}
+	return "Normal " + s
 }
 
 // RMCP Message Header (Section 13.1.3)
@@ -63,10 +61,7 @@ func (r *rmcpHeader) Marshal() ([]byte, error) {
 
 func (r *rmcpHeader) Unmarshal(buf []byte) ([]byte, error) {
 	if len(buf) < rmcpHeaderSize {
-		return nil, &MessageError{
-			Message: fmt.Sprintf("Invalid RMCP header size : %d", len(buf)),
-			Detail:  hex.EncodeToString(buf),
-		}
+		return nil, fmt.Errorf("invalid RMCP header size - %d", len(buf))
 	}
 
 	r.Version = buf[0]

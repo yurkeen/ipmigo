@@ -22,8 +22,10 @@ const (
 	sikSize            = sha1.Size
 )
 
-var const1 = [sikSize]byte{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}
-var const2 = [sikSize]byte{2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2}
+var (
+	const1 = [sikSize]byte{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}
+	const2 = [sikSize]byte{2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2}
+)
 
 // Authentication Algorithm (Section 13.28)
 type authAlgorithm uint8
@@ -32,6 +34,7 @@ const (
 	authRakpNone authAlgorithm = iota
 	authRakpHmacSHA1
 	authRakpHmacMD5
+	authRakpHmacSHA256
 )
 
 func (a authAlgorithm) String() string {
@@ -42,8 +45,10 @@ func (a authAlgorithm) String() string {
 		return "RAKP-HMAC-SHA1"
 	case authRakpHmacMD5:
 		return "RAKP-HMAC-MD5"
+	case authRakpHmacSHA256:
+		return "RAKP-HMAC-SHA256"
 	default:
-		return fmt.Sprintf("Unknown(%d)", a)
+		return fmt.Sprintf("%d (unknown)", a)
 	}
 }
 
@@ -55,6 +60,7 @@ const (
 	integrityHmacSHA1_96
 	integrityHmacMD5_128
 	integrityMD5_128
+	integrityHmacSHA256_128
 )
 
 func (a integrityAlgorithm) String() string {
@@ -67,8 +73,10 @@ func (a integrityAlgorithm) String() string {
 		return "HMAC-MD5-128"
 	case integrityMD5_128:
 		return "MD5-128"
+	case integrityHmacSHA256_128:
+		return "HMAC-SHA256-128"
 	default:
-		return fmt.Sprintf("Unknown(%d)", a)
+		return fmt.Sprintf("%d (unknown)", a)
 	}
 }
 
@@ -93,7 +101,7 @@ func (a cryptAlgorithm) String() string {
 	case cryptXRC4_40:
 		return "xRC4-128"
 	default:
-		return fmt.Sprintf("Unknown(%d)", a)
+		return fmt.Sprintf("%d (unknown)", a)
 	}
 }
 
@@ -114,22 +122,38 @@ func (c *cipherSuite) String() string {
 }
 
 // Cipher Suite IDs (Table 22-20)
-var cipherSuiteIDs []cipherSuite = []cipherSuite{
-	cipherSuite{authRakpNone, integrityNone, cryptNone},
-	cipherSuite{authRakpHmacSHA1, integrityNone, cryptNone},
-	cipherSuite{authRakpHmacSHA1, integrityHmacSHA1_96, cryptNone},
-	cipherSuite{authRakpHmacSHA1, integrityHmacSHA1_96, cryptAesCBC_128},
-	cipherSuite{authRakpHmacSHA1, integrityHmacSHA1_96, cryptXRC4_128},
-	cipherSuite{authRakpHmacSHA1, integrityHmacSHA1_96, cryptXRC4_40},
-	cipherSuite{authRakpHmacMD5, integrityNone, cryptNone},
-	cipherSuite{authRakpHmacMD5, integrityHmacMD5_128, cryptNone},
-	cipherSuite{authRakpHmacMD5, integrityHmacMD5_128, cryptAesCBC_128},
-	cipherSuite{authRakpHmacMD5, integrityHmacMD5_128, cryptXRC4_128},
-	cipherSuite{authRakpHmacMD5, integrityHmacMD5_128, cryptXRC4_40},
-	cipherSuite{authRakpHmacMD5, integrityMD5_128, cryptNone},
-	cipherSuite{authRakpHmacMD5, integrityMD5_128, cryptAesCBC_128},
-	cipherSuite{authRakpHmacMD5, integrityMD5_128, cryptXRC4_128},
-	cipherSuite{authRakpHmacMD5, integrityMD5_128, cryptXRC4_40},
+type CipherSuiteID uint
+
+var unsupportedCipher = cipherSuite{0xff, 0xff, 0xff}
+
+func (id CipherSuiteID) cipherSuite() cipherSuite {
+	// Cipher Suite IDs (Table 22-20)
+	csIds := []cipherSuite{
+		{authRakpNone, integrityNone, cryptNone},                       // 0
+		{authRakpHmacSHA1, integrityNone, cryptNone},                   // 1
+		{authRakpHmacSHA1, integrityHmacSHA1_96, cryptNone},            // 2
+		{authRakpHmacSHA1, integrityHmacSHA1_96, cryptAesCBC_128},      // 3
+		{authRakpHmacSHA1, integrityHmacSHA1_96, cryptXRC4_128},        // 4
+		{authRakpHmacSHA1, integrityHmacSHA1_96, cryptXRC4_40},         // 5
+		{authRakpHmacMD5, integrityNone, cryptNone},                    // 6
+		{authRakpHmacMD5, integrityHmacMD5_128, cryptNone},             // 7
+		{authRakpHmacMD5, integrityHmacMD5_128, cryptAesCBC_128},       // 8
+		{authRakpHmacMD5, integrityHmacMD5_128, cryptXRC4_128},         // 9
+		{authRakpHmacMD5, integrityHmacMD5_128, cryptXRC4_40},          // 10
+		{authRakpHmacMD5, integrityMD5_128, cryptNone},                 // 11
+		{authRakpHmacMD5, integrityMD5_128, cryptAesCBC_128},           // 12
+		{authRakpHmacMD5, integrityMD5_128, cryptXRC4_128},             // 13
+		{authRakpHmacMD5, integrityMD5_128, cryptXRC4_40},              // 14
+		{authRakpHmacSHA256, integrityNone, cryptNone},                 // 15
+		{authRakpHmacSHA256, integrityHmacSHA256_128, cryptNone},       // 16
+		{authRakpHmacSHA256, integrityHmacSHA256_128, cryptAesCBC_128}, // 17
+		{authRakpHmacSHA256, integrityHmacSHA256_128, cryptXRC4_128},   // 18
+		{authRakpHmacSHA256, integrityHmacSHA256_128, cryptXRC4_40},    // 19
+	}
+	if int(id) > len(csIds)-1 {
+		return unsupportedCipher // Unsupported cipher suite.
+	}
+	return csIds[id]
 }
 
 // RMCP+ Open Session Request (Section 13.17)
@@ -137,20 +161,20 @@ type openSessionRequest struct {
 	MessageTag     uint8
 	ConsoleID      uint32 // Remote console session ID
 	PrivilegeLevel PrivilegeLevel
-	CipherSuiteID  uint
+	CipherSuiteID  CipherSuiteID
 }
 
-func (o *openSessionRequest) Marshal() ([]byte, error) {
-	cipher := cipherSuiteIDs[o.CipherSuiteID]
+func (req *openSessionRequest) Marshal() ([]byte, error) {
+	cipher := req.CipherSuiteID.cipherSuite()
 
 	buf := make([]byte, openSessionRequestSize)
-	buf[0] = o.MessageTag
-	buf[1] = byte(o.PrivilegeLevel)
+	buf[0] = req.MessageTag
+	buf[1] = byte(req.PrivilegeLevel)
 	//buf[2] = 0 // reserved
 	//buf[3] = 0 // reserved
 
 	// Our session ID
-	binary.LittleEndian.PutUint32(buf[4:], o.ConsoleID)
+	binary.LittleEndian.PutUint32(buf[4:], req.ConsoleID)
 
 	// Authentication payload
 	buf[8] = 0 // authentication payload type(0)
@@ -185,9 +209,10 @@ func (o *openSessionRequest) Marshal() ([]byte, error) {
 	return buf, nil
 }
 
-func (o *openSessionRequest) String() string {
-	return fmt.Sprintf(`{"MessageTag":%d,"ConsoleID":%d,"PrivilegeLevel":"%s","CipherSuiteID":%d}`,
-		o.MessageTag, o.ConsoleID, o.PrivilegeLevel, o.CipherSuiteID)
+func (req *openSessionRequest) String() string {
+	return fmt.Sprintf(
+		`{"MessageTag":%d,"ConsoleID":%d,"PrivilegeLevel":"%s","CipherSuiteID":%d}`,
+		req.MessageTag, req.ConsoleID, req.PrivilegeLevel, req.CipherSuiteID)
 }
 
 // RMCP+ and RAKP Message Status Code (Section13.24)
@@ -270,27 +295,27 @@ type openSessionResponse struct {
 	CipherSuite    cipherSuite
 }
 
-func (o *openSessionResponse) Unmarshal(buf []byte) ([]byte, error) {
+func (resp *openSessionResponse) Unmarshal(buf []byte) ([]byte, error) {
 	if l := len(buf); l < openSessionResponseSize {
 		buf = append(buf, make([]byte, openSessionResponseSize-l)...)
 	}
 
-	o.MessageTag = buf[0]
-	o.StatusCode = rakpStatusCode(buf[1])
-	o.PrivilegeLevel = PrivilegeLevel(buf[2])
-	o.ConsoleID = binary.LittleEndian.Uint32(buf[4:])
-	o.ManagedID = binary.LittleEndian.Uint32(buf[8:])
-	o.CipherSuite.Auth = authAlgorithm(buf[16])
-	o.CipherSuite.Integrity = integrityAlgorithm(buf[24])
-	o.CipherSuite.Crypt = cryptAlgorithm(buf[32])
+	resp.MessageTag = buf[0]
+	resp.StatusCode = rakpStatusCode(buf[1])
+	resp.PrivilegeLevel = PrivilegeLevel(buf[2])
+	resp.ConsoleID = binary.LittleEndian.Uint32(buf[4:])
+	resp.ManagedID = binary.LittleEndian.Uint32(buf[8:])
+	resp.CipherSuite.Auth = authAlgorithm(buf[16])
+	resp.CipherSuite.Integrity = integrityAlgorithm(buf[24])
+	resp.CipherSuite.Crypt = cryptAlgorithm(buf[32])
 	return buf[openSessionResponseSize:], nil
 }
 
-func (o *openSessionResponse) String() string {
+func (resp *openSessionResponse) String() string {
 	return fmt.Sprintf(
-		`{"MessageTag":%d,"StatusCode":"%s","PrivilegeLevel":"%s",`+
-			`"ConsoleID":%d,"ManagedID":%d,"CipherSuite":%s}`,
-		o.MessageTag, o.StatusCode, o.PrivilegeLevel, o.ConsoleID, o.ManagedID, &o.CipherSuite)
+		`{"MessageTag":%d,"StatusCode":"%s","PrivilegeLevel":"%s","ConsoleID":%d,"ManagedID":%d,"CipherSuite":%s}`,
+		resp.MessageTag, resp.StatusCode, resp.PrivilegeLevel, resp.ConsoleID, resp.ManagedID, &resp.CipherSuite,
+	)
 }
 
 // RAKP Message 1 (Section 13.20)
@@ -303,46 +328,45 @@ type rakpMessage1 struct {
 	Username        string
 }
 
-func (r *rakpMessage1) RequestedRole() byte {
-	b := byte(r.PrivilegeLevel)
-	if !r.PrivilegeLookup {
+func (m *rakpMessage1) RequestedRole() byte {
+	b := byte(m.PrivilegeLevel)
+	if !m.PrivilegeLookup {
 		b |= 0x10
 	}
 	return b
 }
 
-func (r *rakpMessage1) Marshal() ([]byte, error) {
+func (m *rakpMessage1) Marshal() ([]byte, error) {
 	buf := make([]byte, rakpMessage1Size)
-	buf[0] = r.MessageTag
+	buf[0] = m.MessageTag
 	// buf[1] = 0 // reserved
 	// buf[2] = 0 // reserved
 	// buf[3] = 0 // reserved
-	binary.LittleEndian.PutUint32(buf[4:], r.ManagedID)
+	binary.LittleEndian.PutUint32(buf[4:], m.ManagedID)
 
 	// 16 byte random number
-	if _, err := rand.Read(r.ConsoleRand[:]); err != nil {
+	if _, err := rand.Read(m.ConsoleRand[:]); err != nil {
 		return nil, err
 	}
-	copy(buf[8:24], r.ConsoleRand[:])
+	copy(buf[8:24], m.ConsoleRand[:])
 
-	buf[24] = r.RequestedRole()
+	buf[24] = m.RequestedRole()
 	// buf[25] = 0 // reserved
 	// buf[26] = 0 // reserved
 
 	// Username
-	ulen := len(r.Username)
+	ulen := len(m.Username)
 	buf[27] = byte(ulen)
-	copy(buf[28:], r.Username)
+	copy(buf[28:], m.Username)
 
 	return buf[:28+ulen], nil
 }
 
-func (r *rakpMessage1) String() string {
+func (m *rakpMessage1) String() string {
 	return fmt.Sprintf(
-		`{"MessageTag":%d,"ManagedID":%d,"ConsoleRand":"%s",`+
-			`"PrivilegeLevel":"%s","PrivilegeLookup":%t,"Username":"%s"}`,
-		r.MessageTag, r.ManagedID, hex.EncodeToString(r.ConsoleRand[:]), r.PrivilegeLevel,
-		r.PrivilegeLookup, r.Username)
+		`{"MessageTag":%d,"ManagedID":%d,"ConsoleRand":"%s","PrivilegeLevel":"%s","PrivilegeLookup":%t,"Username":"%s"}`,
+		m.MessageTag, m.ManagedID, hex.EncodeToString(m.ConsoleRand[:]), m.PrivilegeLevel, m.PrivilegeLookup, m.Username,
+	)
 }
 
 // RAKP Message 2 (Section 13.21)
@@ -355,59 +379,59 @@ type rakpMessage2 struct {
 	KeyExchangeAuthCode [authCodeSize]byte
 }
 
-func (r *rakpMessage2) ValidateAuthCode(args *Arguments, r1 *rakpMessage1) error {
-	if !requiredAuthentication(args.CipherSuiteID) {
+func (m2 *rakpMessage2) ValidateAuthCode(c *Config, m1 *rakpMessage1) error {
+	if !requiredAuthentication(c.CipherSuiteID) {
 		return nil
 	}
 
 	key := make([]byte, passwordMaxLengthV2_0)
-	copy(key, args.Password)
+	copy(key, c.Password)
 
-	data := make([]byte, 58+len(r1.Username))
-	binary.LittleEndian.PutUint32(data, r.ConsoleID)      // SIDm
-	binary.LittleEndian.PutUint32(data[4:], r1.ManagedID) // SIDc
-	copy(data[8:], r1.ConsoleRand[:])                     // Rm
-	copy(data[24:], r.ManagedRand[:])                     // Rc
-	copy(data[40:], r.ManagedGUID[:])                     // GUIDc
-	data[56] = r1.RequestedRole()                         // ROLEm
-	data[57] = byte(len(r1.Username))                     // ULENGTHm
-	copy(data[58:], r1.Username)                          // UNAMEm
+	data := make([]byte, 58+len(m1.Username))
+	binary.LittleEndian.PutUint32(data, m2.ConsoleID)     // SIDm
+	binary.LittleEndian.PutUint32(data[4:], m1.ManagedID) // SIDc
+	copy(data[8:], m1.ConsoleRand[:])                     // Rm
+	copy(data[24:], m2.ManagedRand[:])                    // Rc
+	copy(data[40:], m2.ManagedGUID[:])                    // GUIDc
+	data[56] = m1.RequestedRole()                         // ROLEm
+	data[57] = byte(len(m1.Username))                     // ULENGTHm
+	copy(data[58:], m1.Username)                          // UNAMEm
 
 	mac := hmac.New(sha1.New, key)
 	mac.Write(data)
 
-	if s := mac.Sum(nil); !hmac.Equal(r.KeyExchangeAuthCode[:], s) {
-		return &MessageError{
-			Message: fmt.Sprintf("RAKP 2 HMAC is invalid : %s - %s",
-				hex.EncodeToString(r.KeyExchangeAuthCode[:]), hex.EncodeToString(s)),
-			Detail: r.String(),
-		}
+	if s := mac.Sum(nil); !hmac.Equal(m2.KeyExchangeAuthCode[:], s) {
+		return fmt.Errorf(
+			"invalid RAKP 2 HMAC: %s - %s",
+			hex.EncodeToString(m2.KeyExchangeAuthCode[:]), hex.EncodeToString(s),
+		)
 	}
 	return nil
 }
 
-func (r *rakpMessage2) Unmarshal(buf []byte) ([]byte, error) {
-	size := rakpMessage2Size
-	if l := len(buf); l < size {
-		buf = append(buf, make([]byte, size-l)...)
+func (m2 *rakpMessage2) Unmarshal(buf []byte) ([]byte, error) {
+	if l := len(buf); l < rakpMessage2Size {
+		buf = append(buf, make([]byte, rakpMessage2Size-l)...)
 	}
 
-	r.MessageTag = buf[0]
-	r.StatusCode = rakpStatusCode(buf[1])
-	r.ConsoleID = binary.LittleEndian.Uint32(buf[4:])
-	copy(r.ManagedRand[:], buf[8:24])
-	copy(r.ManagedGUID[:], buf[24:40])
-	copy(r.KeyExchangeAuthCode[:], buf[40:])
+	m2.MessageTag = buf[0]
+	m2.StatusCode = rakpStatusCode(buf[1])
+	m2.ConsoleID = binary.LittleEndian.Uint32(buf[4:])
+	copy(m2.ManagedRand[:], buf[8:24])
+	copy(m2.ManagedGUID[:], buf[24:40])
+	copy(m2.KeyExchangeAuthCode[:], buf[40:])
 
-	return buf[size:], nil
+	return buf[rakpMessage2Size:], nil
 }
 
-func (r *rakpMessage2) String() string {
+func (m2 *rakpMessage2) String() string {
 	return fmt.Sprintf(
-		`{"MessageTag":%d,"StatusCode":"%s","ConsoleID":%d,`+
-			`"ManagedRand":"%s","ManagedGUID":"%s","KeyExchangeAuthCode":"%s"}`,
-		r.MessageTag, r.StatusCode, r.ConsoleID, hex.EncodeToString(r.ManagedRand[:]),
-		hex.EncodeToString(r.ManagedGUID[:]), hex.EncodeToString(r.KeyExchangeAuthCode[:]))
+		`{"MessageTag":%d,"StatusCode":"%s","ConsoleID":%d,"ManagedRand":"%s","ManagedGUID":"%s","KeyExchangeAuthCode":"%s"}`,
+		m2.MessageTag, m2.StatusCode, m2.ConsoleID,
+		hex.EncodeToString(m2.ManagedRand[:]),
+		hex.EncodeToString(m2.ManagedGUID[:]),
+		hex.EncodeToString(m2.KeyExchangeAuthCode[:]),
+	)
 }
 
 // RAKP Message 3 (Section 13.22)
@@ -422,91 +446,91 @@ type rakpMessage3 struct {
 	K2  [sikSize]byte
 }
 
-func (r *rakpMessage3) GenerateAuthCode(args *Arguments, r1 *rakpMessage1, r2 *rakpMessage2) {
-	if !requiredAuthentication(args.CipherSuiteID) {
+func (m3 *rakpMessage3) GenerateAuthCode(c *Config, m1 *rakpMessage1, m2 *rakpMessage2) {
+	if !requiredAuthentication(c.CipherSuiteID) {
 		return
 	}
 
 	key := make([]byte, passwordMaxLengthV2_0)
-	copy(key, args.Password)
+	copy(key, c.Password)
 
-	data := make([]byte, 22+len(r1.Username))
-	copy(data, r2.ManagedRand[:])                          // Rc
-	binary.LittleEndian.PutUint32(data[16:], r2.ConsoleID) // SIDm
-	data[20] = r1.RequestedRole()                          // ROLEm
-	data[21] = byte(len(r1.Username))                      // ULENGTHm
-	copy(data[22:], r1.Username)                           // UNAMEm
+	data := make([]byte, 22+len(m1.Username))
+	copy(data, m2.ManagedRand[:])                          // Rc
+	binary.LittleEndian.PutUint32(data[16:], m2.ConsoleID) // SIDm
+	data[20] = m1.RequestedRole()                          // ROLEm
+	data[21] = byte(len(m1.Username))                      // ULENGTHm
+	copy(data[22:], m1.Username)                           // UNAMEm
 
 	mac := hmac.New(sha1.New, key)
 	mac.Write(data)
-	copy(r.KeyExchangeAuthCode[:], mac.Sum(nil))
+	copy(m3.KeyExchangeAuthCode[:], mac.Sum(nil))
 }
 
-func (r *rakpMessage3) GenerateSIK(args *Arguments, r1 *rakpMessage1, r2 *rakpMessage2) {
-	if !requiredAuthentication(args.CipherSuiteID) {
+func (m3 *rakpMessage3) GenerateSIK(c *Config, m1 *rakpMessage1, m2 *rakpMessage2) {
+	if !requiredAuthentication(c.CipherSuiteID) {
 		return
 	}
 
-	// Not support KG key
+	// No KG key support
 	key := make([]byte, passwordMaxLengthV2_0)
-	copy(key, args.Password)
+	copy(key, c.Password)
 
-	data := make([]byte, 34+len(r1.Username))
-	copy(data, r1.ConsoleRand[:])      // Rm
-	copy(data[16:], r2.ManagedRand[:]) // Rc
-	data[32] = r1.RequestedRole()      // ROLEm
-	data[33] = byte(len(r1.Username))  // ULENGTHm
-	copy(data[34:], r1.Username)       // UNAMEm
+	data := make([]byte, 34+len(m1.Username))
+	copy(data, m1.ConsoleRand[:])      // Rm
+	copy(data[16:], m2.ManagedRand[:]) // Rc
+	data[32] = m1.RequestedRole()      // ROLEm
+	data[33] = byte(len(m1.Username))  // ULENGTHm
+	copy(data[34:], m1.Username)       // UNAMEm
 
 	mac := hmac.New(sha1.New, key)
 	mac.Write(data)
-	copy(r.SIK[:], mac.Sum(nil))
+	copy(m3.SIK[:], mac.Sum(nil))
 }
 
-func (r *rakpMessage3) GenerateK1(args *Arguments) {
-	if !requiredAuthentication(args.CipherSuiteID) {
+func (m3 *rakpMessage3) GenerateK1(c *Config) {
+	if !requiredAuthentication(c.CipherSuiteID) {
 		return
 	}
 
-	key := make([]byte, len(r.SIK))
-	copy(key, r.SIK[:])
+	key := make([]byte, len(m3.SIK))
+	copy(key, m3.SIK[:])
 
 	mac := hmac.New(sha1.New, key)
 	mac.Write(const1[:])
-	copy(r.K1[:], mac.Sum(nil))
+	copy(m3.K1[:], mac.Sum(nil))
 }
 
-func (r *rakpMessage3) GenerateK2(args *Arguments) {
-	if !requiredAuthentication(args.CipherSuiteID) {
+func (m3 *rakpMessage3) GenerateK2(c *Config) {
+	if !requiredAuthentication(c.CipherSuiteID) {
 		return
 	}
 
-	key := make([]byte, len(r.SIK))
-	copy(key, r.SIK[:])
+	key := make([]byte, len(m3.SIK))
+	copy(key, m3.SIK[:])
 
 	mac := hmac.New(sha1.New, key)
 	mac.Write(const2[:])
-	copy(r.K2[:], mac.Sum(nil))
+	copy(m3.K2[:], mac.Sum(nil))
 }
 
-func (r *rakpMessage3) Marshal() ([]byte, error) {
-	size := rakpMessage3Size + len(r.KeyExchangeAuthCode)
+func (m3 *rakpMessage3) Marshal() ([]byte, error) {
+	size := rakpMessage3Size + len(m3.KeyExchangeAuthCode)
 
 	buf := make([]byte, size)
-	buf[0] = r.MessageTag
-	buf[1] = byte(r.StatusCode)
+	buf[0] = m3.MessageTag
+	buf[1] = byte(m3.StatusCode)
 	// buf[2] = 0 // reserved
 	// buf[3] = 0 // reserved
-	binary.LittleEndian.PutUint32(buf[4:], r.ManagedID)
-	copy(buf[8:], r.KeyExchangeAuthCode[:])
+	binary.LittleEndian.PutUint32(buf[4:], m3.ManagedID)
+	copy(buf[8:], m3.KeyExchangeAuthCode[:])
 
 	return buf, nil
 }
 
-func (r *rakpMessage3) String() string {
+func (m3 *rakpMessage3) String() string {
 	return fmt.Sprintf(
 		`{"MessageTag":%d,"StatusCode":"%s","ManagedID":%d,"KeyExchangeAuthCode":"%s"}`,
-		r.MessageTag, r.StatusCode, r.ManagedID, hex.EncodeToString(r.KeyExchangeAuthCode[:]))
+		m3.MessageTag, m3.StatusCode, m3.ManagedID, hex.EncodeToString(m3.KeyExchangeAuthCode[:]))
 }
 
 type rakpMessage4 struct {
@@ -516,41 +540,41 @@ type rakpMessage4 struct {
 	IntegrityCheckValue [integrityCheckSize]byte
 }
 
-func (r *rakpMessage4) ValidateAuthCode(args *Arguments, r1 *rakpMessage1, r2 *rakpMessage2, r3 *rakpMessage3) error {
-	if !requiredAuthentication(args.CipherSuiteID) {
+func (m4 *rakpMessage4) ValidateAuthCode(c *Config, m1 *rakpMessage1, m2 *rakpMessage2, m3 *rakpMessage3) error {
+	if !requiredAuthentication(c.CipherSuiteID) {
 		return nil
 	}
 
-	key := make([]byte, len(r3.SIK))
-	copy(key, r3.SIK[:])
+	key := make([]byte, len(m3.SIK))
+	copy(key, m3.SIK[:])
 
 	data := make([]byte, 36)
-	copy(data, r1.ConsoleRand[:])                          // Rm
-	binary.LittleEndian.PutUint32(data[16:], r1.ManagedID) // SIDc
-	copy(data[20:], r2.ManagedGUID[:])                     // GUIDc
+	copy(data, m1.ConsoleRand[:])                          // Rm
+	binary.LittleEndian.PutUint32(data[16:], m1.ManagedID) // SIDc
+	copy(data[20:], m2.ManagedGUID[:])                     // GUIDc
 
 	mac := hmac.New(sha1.New, key)
 	mac.Write(data)
-	if s := mac.Sum(nil)[:integrityCheckSize]; !hmac.Equal(r.IntegrityCheckValue[:], s) {
-		return &MessageError{
-			Message: fmt.Sprintf("RAKP 4 HMAC is invalid : %s - %s",
-				hex.EncodeToString(r.IntegrityCheckValue[:]), hex.EncodeToString(s)),
-			Detail: r.String(),
-		}
+	if s := mac.Sum(nil)[:integrityCheckSize]; !hmac.Equal(m4.IntegrityCheckValue[:], s) {
+		return fmt.Errorf(
+			"invalid RAKP 4 HMAC: %s - %s",
+			hex.EncodeToString(m4.IntegrityCheckValue[:]),
+			hex.EncodeToString(s),
+		)
 	}
 	return nil
 }
 
-func (r *rakpMessage4) Unmarshal(buf []byte) ([]byte, error) {
-	size := rakpMessage4Size + len(r.IntegrityCheckValue)
+func (m4 *rakpMessage4) Unmarshal(buf []byte) ([]byte, error) {
+	size := rakpMessage4Size + len(m4.IntegrityCheckValue)
 	if l := len(buf); l < size {
 		buf = append(buf, make([]byte, size-l)...)
 	}
 
-	r.MessageTag = buf[0]
-	r.StatusCode = rakpStatusCode(buf[1])
-	r.ConsoleID = binary.LittleEndian.Uint32(buf[4:])
-	copy(r.IntegrityCheckValue[:], buf[8:])
+	m4.MessageTag = buf[0]
+	m4.StatusCode = rakpStatusCode(buf[1])
+	m4.ConsoleID = binary.LittleEndian.Uint32(buf[4:])
+	copy(m4.IntegrityCheckValue[:], buf[8:])
 
 	return buf[size:], nil
 }
@@ -561,10 +585,10 @@ func (r *rakpMessage4) String() string {
 		r.MessageTag, r.StatusCode, r.ConsoleID, hex.EncodeToString(r.IntegrityCheckValue[:]))
 }
 
-func requiredAuthentication(cid uint) bool {
-	switch suite := cipherSuiteIDs[cid]; suite.Auth {
+func requiredAuthentication(cid CipherSuiteID) bool {
+	switch auth := cid.cipherSuite().Auth; auth {
 	default:
-		panic(`ipmigo: unsupported authentication algorithm - ` + suite.Auth.String())
+		panic("Unsupported authentication algorithm: " + auth.String())
 	case authRakpNone:
 		return false
 	case authRakpHmacSHA1:
@@ -572,10 +596,10 @@ func requiredAuthentication(cid uint) bool {
 	}
 }
 
-func requiredIntegrity(cid uint) bool {
-	switch suite := cipherSuiteIDs[cid]; suite.Integrity {
+func requiredIntegrity(cid CipherSuiteID) bool {
+	switch integrity := cid.cipherSuite().Integrity; integrity {
 	default:
-		panic(`ipmigo: unsupported integrity algorithm - ` + suite.Integrity.String())
+		panic("unsupported integrity algorithm: " + integrity.String())
 	case integrityNone:
 		return false
 	case integrityHmacSHA1_96:
@@ -583,13 +607,13 @@ func requiredIntegrity(cid uint) bool {
 	}
 }
 
-func requiredConfidentiality(cid uint) bool {
-	switch suite := cipherSuiteIDs[cid]; suite.Crypt {
-	default:
-		panic(`ipmigo: unsupported confidentiality algorithm - ` + suite.Crypt.String())
+func requiredConfidentiality(cid CipherSuiteID) bool {
+	switch crypt := cid.cipherSuite().Crypt; crypt {
 	case cryptNone:
 		return false
 	case cryptAesCBC_128:
 		return true
+	default:
+		panic("unsupported confidentiality algorithm: " + crypt.String())
 	}
 }

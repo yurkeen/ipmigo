@@ -47,8 +47,7 @@ func (p *ipmiPacket) String() string {
 	if p.IsRequest() {
 		return fmt.Sprintf(`{"RMCPHeader":%s,"SessionHeader":%s,"Request":%s}`,
 			p.RMCPHeader, p.SessionHeader, p.Request)
-	} else {
-		return fmt.Sprintf(`{"RMCPHeader":%s,"SessionHeader":%s,"Response":%s}`,
-			p.RMCPHeader, p.SessionHeader, p.Response)
 	}
+	return fmt.Sprintf(`{"RMCPHeader":%s,"SessionHeader":%s,"Response":%s}`,
+		p.RMCPHeader, p.SessionHeader, p.Response)
 }

@@ -52,10 +52,8 @@ func (a *asfHeader) Marshal() ([]byte, error) {
 
 func (a *asfHeader) Unmarshal(buf []byte) ([]byte, error) {
 	if len(buf) < asfHeaderSize {
-		return nil, &MessageError{
-			Message: fmt.Sprintf("Invalid ASF header size : %d", len(buf)),
-			Detail:  hex.EncodeToString(buf),
-		}
+		return nil, fmt.Errorf("invalid ASF header size - %d", len(buf))
+
 	}
 
 	a.IANA = binary.BigEndian.Uint32(buf)
@@ -126,10 +124,7 @@ func (p *pongMessage) SupportedIPMI() bool {
 
 func (p *pongMessage) Unmarshal(buf []byte) ([]byte, error) {
 	if len(buf) < pongBodySize {
-		return nil, &MessageError{
-			Message: fmt.Sprintf("Invalid Pong body size : %d", len(buf)),
-			Detail:  hex.EncodeToString(buf),
-		}
+		return nil, fmt.Errorf("invalid RCMP ping response body size - %d", len(buf))
 	}
 
 	p.IANA = binary.BigEndian.Uint32(buf)
@@ -157,13 +152,10 @@ func ping(conn net.Conn, timeout time.Duration) error {
 
 	pong, ok := res.(*pongMessage)
 	if !ok {
-		return &MessageError{
-			Message: "Received an unexpected message (Ping)",
-			Detail:  res.String(),
-		}
+		return fmt.Errorf("unexpected RCMP ping response received: %s", res)
 	}
 	if !pong.SupportedIPMI() {
-		return ErrNotSupportedIPMI
+		return fmt.Errorf("unsupported IPMI version")
 	}
 
 	return nil

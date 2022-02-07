@@ -46,9 +46,12 @@ func (s *sessionHeaderV1_5) Marshal() ([]byte, error) {
 }
 
 func (s *sessionHeaderV1_5) Unmarshal(buf []byte) ([]byte, error) {
+	var errBadHeader = errors.New("incorrect IPMI 1.5 session header size")
+
 	if len(buf) < sessionHeaderV1_5Size {
-		goto ERROR
+		return nil, errBadHeader
 	}
+
 	s.authType = authType(buf[0])
 	s.sequence = binary.LittleEndian.Uint32(buf[1:])
 	s.id = binary.LittleEndian.Uint32(buf[5:])
@@ -57,17 +60,14 @@ func (s *sessionHeaderV1_5) Unmarshal(buf []byte) ([]byte, error) {
 		s.payloadLength = buf[sessionHeaderV1_5Size-1]
 		return buf[sessionHeaderV1_5Size:], nil
 	}
-	if len(buf) >= sessionHeaderV1_5SizeWithAuth {
-		copy(s.authCode[:], buf[sessionHeaderV1_5Size-1:])
-		s.payloadLength = buf[sessionHeaderV1_5SizeWithAuth-1]
-		return buf[sessionHeaderV1_5SizeWithAuth:], nil
+
+	if len(buf) < sessionHeaderV1_5SizeWithAuth {
+		return nil, errBadHeader
 	}
 
-ERROR:
-	return nil, &MessageError{
-		Message: fmt.Sprintf("Invalid IPMI 1.5 session header size : %d", len(buf)),
-		Detail:  hex.EncodeToString(buf),
-	}
+	copy(s.authCode[:], buf[sessionHeaderV1_5Size-1:])
+	s.payloadLength = buf[sessionHeaderV1_5SizeWithAuth-1]
+	return buf[sessionHeaderV1_5SizeWithAuth:], nil
 }
 
 func (s *sessionHeaderV1_5) String() string {
@@ -77,7 +77,7 @@ func (s *sessionHeaderV1_5) String() string {
 
 type sessionV1_5 struct {
 	conn     net.Conn
-	args     *Arguments
+	config   *Config
 	authType authType
 	id       uint32 // Session ID
 	sequence uint32 // Session Sequence Number
@@ -95,20 +95,20 @@ func (s *sessionV1_5) Header() sessionHeader {
 		id:       s.id,
 	}
 	if s.authType != authTypeNone {
-		copy(hdr.authCode[:], []byte(s.args.Password))
+		copy(hdr.authCode[:], []byte(s.config.Password))
 	}
 
 	return hdr
 }
 
 func (s *sessionV1_5) Ping() error {
-	conn, err := net.DialTimeout(s.args.Network, s.args.Address, s.args.Timeout)
+	conn, err := net.DialTimeout(s.config.Network, s.config.Address, s.config.Timeout)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	return ping(conn, s.args.Timeout)
+	return ping(conn, s.config.Timeout)
 }
 
 func (s *sessionV1_5) Open() error {
@@ -116,8 +116,8 @@ func (s *sessionV1_5) Open() error {
 		return nil
 	}
 
-	err := retry(int(s.args.Retries), func() error {
-		conn, e := net.DialTimeout(s.args.Network, s.args.Address, s.args.Timeout)
+	err := retry(int(s.config.Retries), func() error {
+		conn, e := net.DialTimeout(s.config.Network, s.config.Address, s.config.Timeout)
 		if e == nil {
 			s.conn = conn
 		}
@@ -136,15 +136,15 @@ func (s *sessionV1_5) Open() error {
 
 func (s *sessionV1_5) openSession() error {
 	// 1. RMCP Presence Ping
-	err := retry(int(s.args.Retries), func() error {
-		return ping(s.conn, s.args.Timeout)
+	err := retry(int(s.config.Retries), func() error {
+		return ping(s.conn, s.config.Timeout)
 	})
 	if err != nil {
 		return err
 	}
 
 	// 2. Get Channel Authentication Capabilities
-	cac := newChannelAuthCapCommand(V1_5, s.args.PrivilegeLevel)
+	cac := newChannelAuthCapCommand(V1_5, s.config.Role)
 	if _, err := s.execute(cac); err != nil {
 		return err
 	}
@@ -155,10 +155,7 @@ func (s *sessionV1_5) openSession() error {
 			break
 		}
 		if t == authTypeNone {
-			return &MessageError{
-				Message: "No supported authentication types found",
-				Detail:  cac.String(),
-			}
+			return errors.New("no supported authentication types found")
 		}
 	}
 
@@ -200,7 +197,7 @@ func (s *sessionV1_5) Execute(cmd Command) error {
 
 func (s *sessionV1_5) execute(cmd Command) (response, error) {
 	var res *ipmiPacket
-	err := retry(int(s.args.Retries), func() (e error) {
+	err := retry(int(s.config.Retries), func() (e error) {
 		req := &ipmiPacket{
 			RMCPHeader:    newRMCPHeaderForIPMI(),
 			SessionHeader: s.Header(),
@@ -220,10 +217,7 @@ func (s *sessionV1_5) execute(cmd Command) (response, error) {
 
 	rsm, ok := res.Response.(*ipmiResponseMessage)
 	if !ok {
-		return nil, &MessageError{
-			Message: "Received an unexpected message (Command)",
-			Detail:  res.String(),
-		}
+		return nil, fmt.Errorf("unexpected command response received: %s", res)
 	}
 
 	if rsm.CompletionCode != CompletionOK {
@@ -262,23 +256,20 @@ func (s *sessionV1_5) NextRqSeq() uint8 {
 }
 
 func (s *sessionV1_5) SendPacket(req *ipmiPacket) (*ipmiPacket, error) {
-	if buf, err := req.Request.Marshal(); err == nil {
-		req.PayloadBytes = buf
-		req.SessionHeader.SetPayloadLength(len(buf))
-	} else {
+	buf, err := req.Request.Marshal()
+	if err != nil {
 		return nil, err
 	}
+	req.PayloadBytes = buf
+	req.SessionHeader.SetPayloadLength(len(buf))
 
-	res, _, err := sendMessage(s.conn, req, s.args.Timeout)
+	res, _, err := sendMessage(s.conn, req, s.config.Timeout)
 	if err != nil {
 		return nil, err
 	}
 	pkt, ok := res.(*ipmiPacket)
 	if !ok {
-		return nil, &MessageError{
-			Message: "Received an unexpected message (IPMI)",
-			Detail:  res.String(),
-		}
+		return nil, fmt.Errorf("unexpected IPMI message received: %s", res)
 	}
 
 	// Response unmarshal
@@ -294,8 +285,6 @@ func (s *sessionV1_5) String() string {
 		s.id, s.sequence, s.rqSeq, s.authType)
 }
 
-func newSessionV1_5(args *Arguments) session {
-	return &sessionV1_5{
-		args: args,
-	}
+func newSessionV1_5(c *Config) session {
+	return &sessionV1_5{config: c}
 }

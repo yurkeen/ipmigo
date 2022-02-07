@@ -102,10 +102,7 @@ type ipmiResponseMessage struct {
 
 func (m *ipmiResponseMessage) Unmarshal(buf []byte) ([]byte, error) {
 	if len(buf) < ipmiResponseMessageMinSize {
-		return nil, &MessageError{
-			Message: fmt.Sprintf("Invalid IPMI response size : %d", len(buf)),
-			Detail:  hex.EncodeToString(buf),
-		}
+		return nil, fmt.Errorf("invalid IPMI response size - %d", len(buf))
 	}
 
 	// +---------------------+
@@ -122,16 +119,10 @@ func (m *ipmiResponseMessage) Unmarshal(buf []byte) ([]byte, error) {
 	// | 2nd checksum        | 1 bytes
 	// +---------------------+
 	if csum := checksum(buf[0:2]); csum != buf[2] {
-		return nil, &MessageError{
-			Message: fmt.Sprintf("Invalid IPMI response 1st checksum(%d, %d)", csum, buf[2]),
-			Detail:  hex.EncodeToString(buf),
-		}
+		return nil, fmt.Errorf("invalid 1st IPMI response checksum %d - %d)", csum, buf[2])
 	}
 	if csum := checksum(buf[3 : len(buf)-1]); csum != buf[len(buf)-1] {
-		return nil, &MessageError{
-			Message: fmt.Sprintf("Invalid IPMI response 2nd checksum(%d, %d)", csum, buf[len(buf)-1]),
-			Detail:  hex.EncodeToString(buf),
-		}
+		return nil, fmt.Errorf("invalid 2nd IPMI response checksum %d - %d)", csum, buf[len(buf)-1])
 	}
 
 	m.RqAddr = buf[0]

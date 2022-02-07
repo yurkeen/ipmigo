@@ -28,11 +28,6 @@ func unmarshalMessage(buf []byte) (response, []byte, error) {
 	}
 
 	switch rmcp.Class {
-	default:
-		return nil, nil, &MessageError{
-			Message: fmt.Sprintf("Unknown RMCP class : %s", rmcp.Class),
-			Detail:  rmcp.String(),
-		}
 	case rmcpClassASF:
 		asf := &asfHeader{}
 		if rest, err = asf.Unmarshal(rest); err != nil {
@@ -47,10 +42,7 @@ func unmarshalMessage(buf []byte) (response, []byte, error) {
 			}
 			return pong, rest, nil
 		default:
-			return nil, nil, &MessageError{
-				Message: fmt.Sprintf("Unknown ASF message type : %s", asf.Type),
-				Detail:  asf.String(),
-			}
+			return nil, nil, fmt.Errorf("unknown ASF message type %s", asf.Type)
 		}
 	case rmcpClassIPMI:
 		var hdr sessionHeader
@@ -78,18 +70,17 @@ func unmarshalMessage(buf []byte) (response, []byte, error) {
 		case payloadTypeRAKP4:
 			pkt.Response = &rakpMessage4{}
 		default:
-			return nil, nil, &MessageError{
-				Message: fmt.Sprintf("Unknown IPMI payload type : %s", hdr.PayloadType()),
-				Detail:  pkt.String(),
-			}
+			return nil, nil, fmt.Errorf("unknown IPMI payload type %d", hdr.PayloadType())
 		}
 
 		plen := hdr.PayloadLength()
 		if _, err = pkt.Unmarshal(rest[:plen]); err != nil {
 			return nil, nil, err
 		}
-
 		return pkt, rest[plen:], nil
+
+	default:
+		return nil, nil, fmt.Errorf("unknown RMCP class %s", rmcp.Class)
 	}
 }
 

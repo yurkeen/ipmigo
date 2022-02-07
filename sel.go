@@ -2,7 +2,6 @@ package ipmigo
 
 import (
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 )
 
@@ -53,10 +52,7 @@ func (r *SELEventRecord) Data() []byte  { return r.data }
 
 func (r *SELEventRecord) Unmarshal(buf []byte) ([]byte, error) {
 	if l := len(buf); l < selRecordSize {
-		return nil, &MessageError{
-			Message: fmt.Sprintf("Invalid SELEventRecord size : %d/%d", l, selRecordSize),
-			Detail:  hex.EncodeToString(buf),
-		}
+		return nil, fmt.Errorf("invalid SEL event record size - %d", l)
 	}
 	r.data = buf[:selRecordSize]
 	r.RecordID = binary.LittleEndian.Uint16(buf[0:2])
@@ -138,10 +134,9 @@ func (r *SELEventRecord) Description() string {
 
 	if desc, ok := f(); ok {
 		return desc
-	} else {
-		return fmt.Sprintf("Event: Type=0x%02x, Data1=0x%02x, Data2=0x%02x, Data3=0x%02x",
-			r.EventType, r.EventData1, r.EventData2, r.EventData3)
 	}
+	return fmt.Sprintf("Event: Type=0x%02x, Data1=0x%02x, Data2=0x%02x, Data3=0x%02x",
+		r.EventType, r.EventData1, r.EventData2, r.EventData3)
 }
 
 // Timestamped OEM SEL record (Section 32.2)
@@ -161,10 +156,7 @@ func (r *SELTimestampedOEMRecord) Data() []byte  { return r.data }
 
 func (r *SELTimestampedOEMRecord) Unmarshal(buf []byte) ([]byte, error) {
 	if l := len(buf); l < selRecordSize {
-		return nil, &MessageError{
-			Message: fmt.Sprintf("Invalid SELTimestampedOEMRecord size : %d/%d", l, selRecordSize),
-			Detail:  hex.EncodeToString(buf),
-		}
+		return nil, fmt.Errorf("invalid SEL TimestampedOEM record size - %d", l)
 	}
 	r.data = buf[:selRecordSize]
 	r.RecordID = binary.LittleEndian.Uint16(buf[0:2])
@@ -191,10 +183,7 @@ func (r *SELNonTimestampedOEMRecord) Data() []byte  { return r.data }
 
 func (r *SELNonTimestampedOEMRecord) Unmarshal(buf []byte) ([]byte, error) {
 	if l := len(buf); l < selRecordSize {
-		return nil, &MessageError{
-			Message: fmt.Sprintf("Invalid SELNonTimestampedOEMRecord size : %d/%d", l, selRecordSize),
-			Detail:  hex.EncodeToString(buf),
-		}
+		return nil, fmt.Errorf("invalid SEL NonTimestampedOEM record size - %d", l)
 	}
 	r.data = buf[:selRecordSize]
 	r.RecordID = binary.LittleEndian.Uint16(buf[0:2])
@@ -213,35 +202,39 @@ func selGetRecord(c *Client, reservation, id uint16) (record SELRecord, nextID u
 		RecordOffset:  0x00,
 		ReadBytes:     0xff,
 	}
+
 	if err = c.Execute(gse); err != nil {
 		return
 	}
+
 	if l := len(gse.RecordData); l < 3 {
-		err = &MessageError{Message: fmt.Sprintf("Invalid SELRecord size : %d", l)}
+		err = fmt.Errorf("invalid SEL record size - %d", l)
 		return
 	}
 
-	if t := SELType(gse.RecordData[2]); t.IsTimestampedOEM() {
+	selType := SELType(gse.RecordData[2])
+
+	if selType.IsTimestampedOEM() {
 		r := &SELTimestampedOEMRecord{}
 		if _, err = r.Unmarshal(gse.RecordData); err != nil {
 			return
 		}
-		record = r
-	} else if t.IsNonTimestampedOEM() {
+		return r, gse.NextRecordID, nil
+	}
+
+	if selType.IsNonTimestampedOEM() {
 		r := &SELNonTimestampedOEMRecord{}
 		if _, err = r.Unmarshal(gse.RecordData); err != nil {
 			return
 		}
-		record = r
-	} else {
-		r := &SELEventRecord{}
-		if _, err = r.Unmarshal(gse.RecordData); err != nil {
-			return
-		}
-		record = r
+		return r, gse.NextRecordID, nil
 	}
 
-	return record, gse.NextRecordID, nil
+	r := &SELEventRecord{}
+	if _, err = r.Unmarshal(gse.RecordData); err != nil {
+		return
+	}
+	return r, gse.NextRecordID, nil
 }
 
 func SELGetEntries(c *Client, offset, num int) (records []SELRecord, total int, err error) {
@@ -251,9 +244,7 @@ func SELGetEntries(c *Client, offset, num int) (records []SELRecord, total int, 
 	}
 
 	if v := gsi.SELVersion; v != 0x51 && v != 0x02 {
-		return nil, 0, &MessageError{
-			Message: fmt.Sprintf("Unknown SEL version : %d", v),
-		}
+		return nil, 0, fmt.Errorf("unknown SEL version %d", v)
 	}
 	total = int(gsi.Entries)
 

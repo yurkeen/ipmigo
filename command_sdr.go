@@ -89,9 +89,8 @@ func (c *GetSDRCommand) Unmarshal(buf []byte) ([]byte, error) {
 		c.RecordData = make([]byte, l)
 		copy(c.RecordData, buf)
 		return nil, nil
-	} else {
-		c.RecordData = make([]byte, c.ReadBytes)
-		copy(c.RecordData, buf)
-		return buf[c.ReadBytes:], nil
 	}
+	c.RecordData = make([]byte, c.ReadBytes)
+	copy(c.RecordData, buf)
+	return buf[c.ReadBytes:], nil
 }

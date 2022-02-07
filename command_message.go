@@ -2,7 +2,6 @@ package ipmigo
 
 import (
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"net"
 )
@@ -42,9 +41,8 @@ func (c *channelAuthCapCommand) Unmarshal(buf []byte) ([]byte, error) {
 func (c *channelAuthCapCommand) IsSupportedAuthType(t authType) bool {
 	if t == authTypeRMCPPlus {
 		return (c.AuthTypeSupport & 0x80) != 0
-	} else {
-		return c.AuthTypeSupport&(1<<t) != 0
 	}
+	return c.AuthTypeSupport&(1<<t) != 0
 }
 
 func newChannelAuthCapCommand(v Version, l PrivilegeLevel) *channelAuthCapCommand {
@@ -157,10 +155,7 @@ func (c *GetSessionInfoCommand) Marshal() ([]byte, error) {
 
 func (c *GetSessionInfoCommand) Unmarshal(buf []byte) ([]byte, error) {
 	if l := len(buf); l != 3 && l < 18 {
-		return nil, &MessageError{
-			Message: fmt.Sprintf("Invalid %s Response size : %d", c.Name(), l),
-			Detail:  hex.EncodeToString(buf),
-		}
+		return nil, fmt.Errorf("invalid %s response size - %d", c.Name(), l)
 	}
 	c.SessionHandle = buf[0]
 	c.SessionSlotCount = buf[1] & 0x3f

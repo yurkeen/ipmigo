@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/k-sone/ipmigo"
+	"github.com/yurkeen/ipmigo"
 )
 
 // | Name | Type | Reading | Units | Status(for threshold-base) |
@@ -12,7 +12,7 @@ var format string = "| %-16s | %-30s | %-10s | %-20s | %-3s |\n"
 
 // Print sensor data repository entries and readings.
 func main() {
-	c, err := ipmigo.NewClient(ipmigo.Arguments{
+	c, err := ipmigo.NewClient(ipmigo.Config{
 		Version:       ipmigo.V2_0,
 		Address:       "192.168.1.1:623",
 		Timeout:       2 * time.Second,

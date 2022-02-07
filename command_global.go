@@ -43,8 +43,6 @@ func (c *GetDeviceIDCommand) Unmarshal(buf []byte) ([]byte, error) {
 
 	if l := len(buf); l < 15 {
 		return buf[11:], nil
-	} else {
-		return buf[15:], nil
 	}
-	return nil, nil
+	return buf[15:], nil
 }

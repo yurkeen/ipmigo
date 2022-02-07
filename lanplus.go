@@ -9,6 +9,7 @@ import (
 	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -48,10 +49,7 @@ func (s *sessionHeaderV2_0) Marshal() ([]byte, error) {
 
 func (s *sessionHeaderV2_0) Unmarshal(buf []byte) ([]byte, error) {
 	if len(buf) < sessionHeaderV2_0Size {
-		return nil, &MessageError{
-			Message: fmt.Sprintf("Invalid IPMI 2.0 session header size : %d", len(buf)),
-			Detail:  hex.EncodeToString(buf),
-		}
+		return nil, fmt.Errorf("incorrect IPMI 2.0 session header size: %d", len(buf))
 	}
 	s.authType = authType(buf[0])
 	s.payloadType = payloadType(buf[1])
@@ -68,7 +66,7 @@ func (s *sessionHeaderV2_0) String() string {
 
 type sessionV2_0 struct {
 	conn     net.Conn
-	args     *Arguments
+	config   *Config
 	id       uint32 // Session ID
 	sequence uint32 // Session Sequence Number
 	rqSeq    uint8  // Command Sequence Number
@@ -90,13 +88,13 @@ func (s *sessionV2_0) Header(p payloadType) sessionHeader {
 }
 
 func (s *sessionV2_0) Ping() error {
-	conn, err := net.DialTimeout(s.args.Network, s.args.Address, s.args.Timeout)
+	conn, err := net.DialTimeout(s.config.Network, s.config.Address, s.config.Timeout)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	return ping(conn, s.args.Timeout)
+	return ping(conn, s.config.Timeout)
 }
 
 func (s *sessionV2_0) Open() error {
@@ -104,8 +102,8 @@ func (s *sessionV2_0) Open() error {
 		return nil
 	}
 
-	err := retry(int(s.args.Retries), func() error {
-		conn, e := net.DialTimeout(s.args.Network, s.args.Address, s.args.Timeout)
+	err := retry(int(s.config.Retries), func() error {
+		conn, e := net.DialTimeout(s.config.Network, s.config.Address, s.config.Timeout)
 		if e == nil {
 			s.conn = conn
 		}
@@ -126,39 +124,30 @@ func (s *sessionV2_0) openSession() error {
 	// 1. Get Channel Authentication Capabilities
 
 	// Send in 1.5 packet format to query any server
-	s1 := &sessionV1_5{args: s.args, conn: s.conn}
-	cac := newChannelAuthCapCommand(V2_0, s.args.PrivilegeLevel)
+	s1 := &sessionV1_5{config: s.config, conn: s.conn}
+	cac := newChannelAuthCapCommand(V2_0, s.config.Role)
 	if _, err := s1.execute(cac); err != nil {
 		// Retry, without requesting IPMI V2
-		cac = newChannelAuthCapCommand(V1_5, s.args.PrivilegeLevel)
+		cac = newChannelAuthCapCommand(V1_5, s.config.Role)
 		if _, err := s1.execute(cac); err != nil {
 			return err
 		}
 	}
 
 	if !cac.IsSupportedAuthType(authTypeRMCPPlus) {
-		return &MessageError{
-			Message: "Not Support RMCP+",
-			Detail:  cac.String(),
-		}
+		return errors.New("RMCP+ not supported")
 	}
 
 	// 2. Open Session Request
-	priv := s.args.PrivilegeLevel
-	if priv == PrivilegeAdministrator {
-		// Request the highest level matching proposed algorithms (lanplus.c L2809)
-		priv = PrivilegeLevel(0)
-	}
-
 	var pkt *ipmiPacket
-	err := retry(int(s.args.Retries), func() (e error) {
+	err := retry(int(s.config.Retries), func() (e error) {
 		req := &ipmiPacket{
 			RMCPHeader:    newRMCPHeaderForIPMI(),
 			SessionHeader: s.Header(payloadTypeRMCPOpenReq),
 			Request: &openSessionRequest{
 				ConsoleID:      consoleID,
-				PrivilegeLevel: priv,
-				CipherSuiteID:  s.args.CipherSuiteID,
+				PrivilegeLevel: s.config.Role,
+				CipherSuiteID:  s.config.CipherSuiteID,
 			},
 		}
 		pkt, e = s.SendPacket(req)
@@ -170,44 +159,34 @@ func (s *sessionV2_0) openSession() error {
 
 	osr, ok := pkt.Response.(*openSessionResponse)
 	if !ok {
-		return &MessageError{
-			Message: "Received an unexpected message (Open Session Response)",
-			Detail:  pkt.String(),
-		}
+		return errors.New("unexpected response for open session received")
 	}
+
 	if osr.StatusCode != rakpStatusNoErrors {
-		return &MessageError{
-			Message: fmt.Sprintf("Error in Open Session Response : %s", osr.StatusCode),
-			Detail:  pkt.String(),
-		}
+		return fmt.Errorf("open session response indicated errors: %s", osr.StatusCode)
 	}
+
 	if consoleID != osr.ConsoleID {
-		return &MessageError{
-			Message: fmt.Sprintf("Mismatch console session ID in Open Session Response : 0x%x - 0x%x",
-				consoleID, osr.ConsoleID),
-			Detail: pkt.String(),
-		}
+		return fmt.Errorf("console session ID mismatch 0x%x - 0x%x", consoleID, osr.ConsoleID)
 	}
-	if reqSuite := cipherSuiteIDs[s.args.CipherSuiteID]; !reqSuite.Equal(&osr.CipherSuite) {
-		return &MessageError{
-			Message: fmt.Sprintf("Mismatch cipher suite : %s - %s", reqSuite, osr.CipherSuite),
-			Detail:  pkt.String(),
-		}
+
+	if reqSuite := s.config.CipherSuiteID.cipherSuite(); !reqSuite.Equal(&osr.CipherSuite) {
+		return fmt.Errorf("cipher suite mismatch %s - %s", reqSuite, osr.CipherSuite)
 	}
 
 	// 3. Exchange information(RAKP Message 1,2)
-	r1 := &rakpMessage1{
+	m1 := &rakpMessage1{
 		ManagedID:       osr.ManagedID,
-		PrivilegeLevel:  s.args.PrivilegeLevel,
+		PrivilegeLevel:  s.config.Role,
 		PrivilegeLookup: false,
-		Username:        s.args.Username,
+		Username:        s.config.Username,
 	}
 
-	err = retry(int(s.args.Retries), func() (e error) {
+	err = retry(int(s.config.Retries), func() (e error) {
 		req := &ipmiPacket{
 			RMCPHeader:    newRMCPHeaderForIPMI(),
 			SessionHeader: s.Header(payloadTypeRAKP1),
-			Request:       r1,
+			Request:       m1,
 		}
 		pkt, e = s.SendPacket(req)
 		return
@@ -216,44 +195,38 @@ func (s *sessionV2_0) openSession() error {
 		return err
 	}
 
-	r2, ok := pkt.Response.(*rakpMessage2)
+	m2, ok := pkt.Response.(*rakpMessage2)
 	if !ok {
-		return &MessageError{
-			Message: "Received an unexpected message (RAKP 2)",
-			Detail:  pkt.String(),
-		}
+		return errors.New("unexpected RAKP 2 response received")
 	}
-	if r2.StatusCode != rakpStatusNoErrors {
-		return &MessageError{
-			Message: fmt.Sprintf("Error in RAKP 2 : %s", r2.StatusCode),
-			Detail:  pkt.String(),
-		}
+
+	if m2.StatusCode != rakpStatusNoErrors {
+		return fmt.Errorf("RAKP 2 response returned with an error: %s", m2.StatusCode)
 	}
-	if consoleID != r2.ConsoleID {
-		return &MessageError{
-			Message: fmt.Sprintf("Mismatch console session ID in RAKP 2 : 0x%x - 0x%x", consoleID, r2.ConsoleID),
-			Detail:  pkt.String(),
-		}
+
+	if consoleID != m2.ConsoleID {
+		return fmt.Errorf("RAKP 2 response console session ID mismatch 0x%x - 0x%x", consoleID, m2.ConsoleID)
 	}
-	if err = r2.ValidateAuthCode(s.args, r1); err != nil {
+
+	if err = m2.ValidateAuthCode(s.config, m1); err != nil {
 		return err
 	}
 
 	// 4. Activate session(RAKP Message 3,4)
-	r3 := &rakpMessage3{
+	m3 := &rakpMessage3{
 		StatusCode: rakpStatusNoErrors,
 		ManagedID:  osr.ManagedID,
 	}
-	r3.GenerateAuthCode(s.args, r1, r2)
-	r3.GenerateSIK(s.args, r1, r2)
-	r3.GenerateK1(s.args)
-	r3.GenerateK2(s.args)
+	m3.GenerateAuthCode(s.config, m1, m2)
+	m3.GenerateSIK(s.config, m1, m2)
+	m3.GenerateK1(s.config)
+	m3.GenerateK2(s.config)
 
-	err = retry(int(s.args.Retries), func() (e error) {
+	err = retry(int(s.config.Retries), func() (e error) {
 		req := &ipmiPacket{
 			RMCPHeader:    newRMCPHeaderForIPMI(),
 			SessionHeader: s.Header(payloadTypeRAKP3),
-			Request:       r3,
+			Request:       m3,
 		}
 		pkt, e = s.SendPacket(req)
 		return
@@ -262,41 +235,29 @@ func (s *sessionV2_0) openSession() error {
 		return err
 	}
 
-	r4, ok := pkt.Response.(*rakpMessage4)
+	m4, ok := pkt.Response.(*rakpMessage4)
 	if !ok {
-		return &MessageError{
-			Message: "Received an unexpected message (RAKP 4)",
-			Detail:  pkt.String(),
-		}
+		return errors.New("unexpected RAKP 4 response received")
 	}
-	if r4.StatusCode != rakpStatusNoErrors {
-		return &MessageError{
-			Message: fmt.Sprintf("Error in RAKP 4 : %s", r2.StatusCode),
-			Detail:  pkt.String(),
-		}
+	if m4.StatusCode != rakpStatusNoErrors {
+		return fmt.Errorf("RAKP 4 response returned with an error: %s", m4.StatusCode)
 	}
-	if consoleID != r4.ConsoleID {
-		return &MessageError{
-			Message: fmt.Sprintf("Mismatch console session ID in RAKP 4 : 0x%x - 0x%x", consoleID, r4.ConsoleID),
-			Detail:  pkt.String(),
-		}
+	if consoleID != m4.ConsoleID {
+		return fmt.Errorf("RAKP 4 reponse console session ID mismatch 0x%x - 0x%x", consoleID, m4.ConsoleID)
 	}
-	if err = r4.ValidateAuthCode(s.args, r1, r2, r3); err != nil {
+	if err = m4.ValidateAuthCode(s.config, m1, m2, m3); err != nil {
 		return err
 	}
 
 	// Set session ID
 	s.id = osr.ManagedID
-	s.k1 = r3.K1[:]
-	s.k2 = r3.K2[:]
+	s.k1 = m3.K1[:]
+	s.k2 = m3.K2[:]
 
 	// Set session privilege level
-	if l := s.args.PrivilegeLevel; l > PrivilegeUser {
-		if _, err := s.execute(newSetSessionPrivilegeCommand(l)); err != nil {
-			return &MessageError{
-				Cause:   err,
-				Message: fmt.Sprintf("Unable to set session privilege level to %s", l),
-			}
+	if level := s.config.Role; level > RoleUser {
+		if _, err := s.execute(newSetSessionPrivilegeCommand(level)); err != nil {
+			return fmt.Errorf("unable to set session privilege level to %s", level)
 		}
 	}
 
@@ -339,7 +300,7 @@ func (s *sessionV2_0) Execute(cmd Command) error {
 
 func (s *sessionV2_0) execute(cmd Command) (response, error) {
 	var res *ipmiPacket
-	err := retry(int(s.args.Retries), func() (e error) {
+	err := retry(int(s.config.Retries), func() (e error) {
 		req := &ipmiPacket{
 			RMCPHeader:    newRMCPHeaderForIPMI(),
 			SessionHeader: s.Header(payloadTypeIPMI),
@@ -359,10 +320,7 @@ func (s *sessionV2_0) execute(cmd Command) (response, error) {
 
 	rsm, ok := res.Response.(*ipmiResponseMessage)
 	if !ok {
-		return nil, &MessageError{
-			Message: "Received an unexpected message (Command)",
-			Detail:  res.String(),
-		}
+		return nil, fmt.Errorf("unexpected IPMI command response: %s", res)
 	}
 
 	if rsm.CompletionCode != CompletionOK {
@@ -401,82 +359,70 @@ func (s *sessionV2_0) NextRqSeq() uint8 {
 }
 
 func (s *sessionV2_0) SendPacket(req *ipmiPacket) (*ipmiPacket, error) {
-	if buf, err := req.Request.Marshal(); err == nil {
-		req.PayloadBytes = buf
-		req.SessionHeader.SetPayloadLength(len(buf))
-	} else {
+	buf, err := req.Request.Marshal()
+	if err != nil {
 		return nil, err
 	}
+	req.PayloadBytes = buf
+	req.SessionHeader.SetPayloadLength(len(buf))
 
 	if s.ActiveSession() {
 		// Encrypt the payload
-		if requiredConfidentiality(s.args.CipherSuiteID) {
+		if requiredConfidentiality(s.config.CipherSuiteID) {
 			req.SessionHeader.SetEncrypted(true)
-			if buf, err := encryptPayload(req.PayloadBytes, s.k2); err == nil {
-				req.PayloadBytes = buf
-				req.SessionHeader.SetPayloadLength(len(buf))
-			} else {
+			buf, err := encryptPayload(req.PayloadBytes, s.k2)
+			if err != nil {
 				return nil, err
 			}
+			req.PayloadBytes = buf
+			req.SessionHeader.SetPayloadLength(len(buf))
 		}
 		// Append the session trailer
-		if requiredIntegrity(s.args.CipherSuiteID) {
+		if requiredIntegrity(s.config.CipherSuiteID) {
 			// Trailer's source is the session header and payload
 			req.SessionHeader.SetAuthenticated(true)
-			if msg, err := req.SessionHeader.Marshal(); err == nil {
-				trailer := makeTrailer(append(msg, req.PayloadBytes...), s.k1)
-				req.PayloadBytes = append(req.PayloadBytes, trailer...)
-			} else {
+			msg, err := req.SessionHeader.Marshal()
+			if err != nil {
 				return nil, err
 			}
+			trailer := makeTrailer(append(msg, req.PayloadBytes...), s.k1)
+			req.PayloadBytes = append(req.PayloadBytes, trailer...)
 		}
 	}
 
-	res, msg, err := sendMessage(s.conn, req, s.args.Timeout)
+	res, msg, err := sendMessage(s.conn, req, s.config.Timeout)
 	if err != nil {
 		return nil, err
 	}
 	pkt, ok := res.(*ipmiPacket)
 	if !ok {
-		return nil, &MessageError{
-			Message: "Received an unexpected message (IPMI)",
-			Detail:  res.String(),
-		}
+		return nil, fmt.Errorf("unexpected IPMI response received: %s", res)
 	}
 
 	if s.ActiveSession() {
 		if id := pkt.SessionHeader.ID(); consoleID != id {
-			return nil, &MessageError{
-				Message: fmt.Sprintf("Mismatch console session ID : 0x%x - 0x%x", consoleID, id),
-				Detail:  pkt.String(),
-			}
+			return nil, fmt.Errorf("console session ID mismatch 0x%x - 0x%x", consoleID, id)
 		}
 
-		if requiredIntegrity(s.args.CipherSuiteID) {
+		if requiredIntegrity(s.config.CipherSuiteID) {
 			if !pkt.SessionHeader.PayloadType().Authenticated() {
-				return nil, &MessageError{
-					Message: "Response message is not authenticated",
-					Detail:  pkt.String(),
-				}
+				return nil, errors.New("response message not authenticated")
 			}
 			if err := validateTrailer(msg[rmcpHeaderSize:], s.k1); err != nil {
 				return nil, err
 			}
 		}
 
-		if requiredConfidentiality(s.args.CipherSuiteID) {
+		if requiredConfidentiality(s.config.CipherSuiteID) {
 			if !pkt.SessionHeader.PayloadType().Encrypted() {
-				return nil, &MessageError{
-					Message: "Response message is not encrypted",
-					Detail:  pkt.String(),
-				}
+				return nil, errors.New("response message not encrypted")
 			}
-			if buf, err := decryptPayload(pkt.PayloadBytes, s.k2); err == nil {
-				pkt.PayloadBytes = buf
-				pkt.SessionHeader.SetPayloadLength(len(buf))
-			} else {
+			buf, err := decryptPayload(pkt.PayloadBytes, s.k2)
+			if err != nil {
 				return nil, err
 			}
+			pkt.PayloadBytes = buf
+			pkt.SessionHeader.SetPayloadLength(len(buf))
 		}
 	}
 
@@ -493,10 +439,8 @@ func (s *sessionV2_0) String() string {
 		s.id, s.sequence, s.rqSeq, hex.EncodeToString(s.k1), hex.EncodeToString(s.k2))
 }
 
-func newSessionV2_0(args *Arguments) session {
-	return &sessionV2_0{
-		args: args,
-	}
+func newSessionV2_0(c *Config) session {
+	return &sessionV2_0{config: c}
 }
 
 // Section 13.29
@@ -540,9 +484,7 @@ func decryptPayload(src, key []byte) ([]byte, error) {
 	}
 
 	if l := len(src); l < aes.BlockSize || l%aes.BlockSize != 0 {
-		return nil, &MessageError{
-			Message: fmt.Sprintf("Payload is not the specified length : %d", l),
-		}
+		return nil, fmt.Errorf("incorrect payload size - %d", l)
 	}
 
 	dst := make([]byte, len(src)-aes.BlockSize)
@@ -587,9 +529,7 @@ func makeTrailer(src, key []byte) []byte {
 
 func validateTrailer(src, key []byte) error {
 	if l := len(src); l < 12 {
-		return &MessageError{
-			Message: fmt.Sprintf("Payload does not contain auth code : %d", l),
-		}
+		return errors.New("payload has no auth code")
 	}
 
 	authCode := src[len(src)-12:]
@@ -597,11 +537,10 @@ func validateTrailer(src, key []byte) error {
 	mac.Write(src[:len(src)-12])
 
 	if generated := mac.Sum(nil); !bytes.Equal(authCode, generated[:12]) {
-		return &MessageError{
-			Message: fmt.Sprintf("Received message with invalid authcode : %s - %s",
-				hex.EncodeToString(authCode), hex.EncodeToString(generated)),
-			Detail: hex.EncodeToString(src),
-		}
+		return fmt.Errorf(
+			"received message with invalid authcode %s - %s",
+			hex.EncodeToString(authCode), hex.EncodeToString(generated),
+		)
 	}
 
 	return nil
