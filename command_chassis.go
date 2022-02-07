@@ -55,14 +55,61 @@ func (c *GetChassisStatusCommand) Unmarshal(buf []byte) ([]byte, error) {
 	return nil, nil
 }
 
+type ChassisPowerState uint8
+
+const (
+	// Force system into soft off (S4/S45) state. This is for ‘emergency’
+	// management power down actions. The command does not initiate a clean
+	// shut-down of the operating system prior to powering down the system.
+	// 0h
+	PowerDown ChassisPowerState = iota
+
+	// Power Up.
+	// 1h
+	PowerUp
+
+	// This command provides a power off intervalof at least 1 second
+	// following the deassertion of the system’s POWERGOOD status from
+	// the main power subsystem. It is recommended that no action occur
+	// if system power is off (S4/S5) when this action is selected, and
+	// that a D5h 'Request parameter(s) not supported in present state.'
+	// error completion code be returned. Note that some implementations
+	// may cause a system power up if a power cycle operation is selected
+	// when system power is down. For consistency of operation, it is
+	// recommended that system management software first check the system
+	// power state before issuing a power cycle, and only issue the
+	// command if system power is ON or in a lower sleep state than S4/S5.
+	// 2h
+	PowerCycle
+
+	// In some implementations, the BMC may not know whether a reset will
+	// cause any particular effect and will pulse the system reset signal
+	// regardless of power state. If the implementation can tell that no
+	//action will occur if a reset is delivered in a given power state,
+	// then it is recommended (but still optional) that a D5h 'Request
+	// parameter(s) not supported in present state.' error completion code
+	// be returned.
+	// 3h
+	PowerResetHard
+
+	// Pulse a version of a diagnostic interrupt that goes directly to the
+	// processor(s). This is typically used to cause the operating system
+	// to do a diagnostic dump (OS dependent). The interrupt is commonly
+	// an NMI on IA-32 systems and an INIT on Intel® ItaniumTM processor
+	// based systems.
+	// 4h
+	PowerDiagInterrupt
+
+	// Initiate a soft-shutdown of OS via ACPI by emulating a fatal
+	// overtemperature.
+	// 5h
+	PowerSoftACPIDown
+)
+
 // Set Chassis Power Command (Section 28.3)
 type SetChassisControlCommand struct {
 	// Request Data
-	PowerState uint8
-	// 0 - power down
-	// 1 - power up
-	// 2 - power cycle
-	// 3 - hard reset
+	PowerState ChassisPowerState
 }
 
 func (c *SetChassisControlCommand) Name() string           { return "Set Chassis Power" }
@@ -70,7 +117,7 @@ func (c *SetChassisControlCommand) Code() uint8            { return 0x02 }
 func (c *SetChassisControlCommand) NetFnRsLUN() NetFnRsLUN { return NewNetFnRsLUN(NetFnChassisReq, 0) }
 func (c *SetChassisControlCommand) String() string         { return cmdToJSON(c) }
 func (c *SetChassisControlCommand) Marshal() ([]byte, error) {
-	return []byte{c.PowerState}, nil
+	return []byte{byte(c.PowerState)}, nil
 }
 
 func (c *SetChassisControlCommand) Unmarshal(buf []byte) ([]byte, error) { return nil, nil }
